@@ -24,10 +24,19 @@
 | `discord/server.ts` | 改修は `// discord-threads:` マーカー付きの3箇所のみ。 |
 | `.claude-plugin/marketplace.json` | このリポジトリをマーケットプレイスとして登録する定義。 |
 | `scripts/pull-upstream.sh` | 上流 subtree を再取得する追従スクリプト。 |
+| `scripts/run-channel.sh` | チャネルを常駐起動する自動再起動ループ。 |
+| `scripts/confirm-loop.py` | claude に PTY を供給し起動時プロンプトに自動応答する補助。 |
 
 ## Install
 
-`~/.claude/settings.json` に次を追記して有効化する。 `enabledPlugins` と `extraKnownMarketplaces` は `settings.local.json` だと確実にマージされない既知の挙動があるため、本体の既存マップへ追記する。
+インストールは Claude Code の CLI で行う。マーケットプレイスを登録してプラグインを導入すると、`~/.claude/settings.json` の `extraKnownMarketplaces` と `enabledPlugins` が自動で更新される。
+
+```shell
+claude plugin marketplace add yjn279/claude-discord-plugin
+claude plugin install discord@claude-discord-plugin
+```
+
+手動で設定する場合は `~/.claude/settings.json` の既存マップへ次を追記する。`enabledPlugins` と `extraKnownMarketplaces` は `settings.local.json` だと確実にマージされない既知の挙動があるため、本体へ書く。公式 `discord` プラグインを併用すると二重応答になるため、`discord@claude-plugins-official` は `false` にして切り替える。
 
 ```json
 {
@@ -42,11 +51,21 @@
 }
 ```
 
-チャンネル接続は次のコマンドで起動する。公式 `discord` プラグインを併用すると二重応答になるため、無効化したうえで切り替える。
+## Run
+
+起動経路には制約がある。Claude Code の `--channels` は Anthropic が審査した承認チャネルの allowlist 限定で、自作フォークは `not on the approved channels allowlist` と拒否される（MCP は起動してもメッセージが Claude に注入されず無応答になる）。自作・フォークのチャネルを動かす正規の経路は `--dangerously-load-development-channels` であり、`plugin:` 指定でインストール済みのビルドを起動する。
 
 ```shell
-claude --channels plugin:discord@claude-discord-plugin
+claude --dangerously-load-development-channels plugin:discord@claude-discord-plugin
 ```
+
+常駐させる場合は同梱の `scripts/run-channel.sh` を使う。claude は標準出力が端末でないと `--print` モードに落ちて即終了するため、`scripts/confirm-loop.py` が擬似端末（PTY）を供給し、起動時の確認プロンプトにも自動で応答する。`screen` でデタッチして常駐させ、クラッシュ時は自動再起動する。
+
+```shell
+screen -dmS discord ./scripts/run-channel.sh
+```
+
+接続確認は `screen -r discord` 、停止は `screen -S discord -X quit` で行う。
 
 ## Requirements
 
