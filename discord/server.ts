@@ -118,6 +118,12 @@ type Access = {
   textChunkLimit?: number
   /** Split on paragraph boundaries instead of hard char count. */
   chunkMode?: 'length' | 'newline'
+  // discord-threads: answer @mentions in channels not explicitly in `groups`
+  // (mention-gated, restricted to `allowFrom`). Default true.
+  listenAllChannels?: boolean
+  // discord-threads: open a thread on a top-level channel mention and reply
+  // inside it. Default true.
+  autoThread?: boolean
 }
 
 function defaultAccess(): Access {
@@ -162,6 +168,9 @@ function readAccessFile(): Access {
       replyToMode: parsed.replyToMode,
       textChunkLimit: parsed.textChunkLimit,
       chunkMode: parsed.chunkMode,
+      // discord-threads: pass through opt-out flags (default behavior is enabled).
+      listenAllChannels: parsed.listenAllChannels,
+      autoThread: parsed.autoThread,
     }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return defaultAccess()
@@ -280,13 +289,27 @@ async function gate(msg: Message): Promise<GateResult> {
   const channelId = msg.channel.isThread()
     ? msg.channel.parentId ?? msg.channelId
     : msg.channelId
-  const policy = access.groups[channelId]
+  // discord-threads: when a channel isn't explicitly opted in, fall back to a
+  // mention-gated, owner-only policy so the bot answers @mentions everywhere it
+  // can see — but ONLY when an owner allowlist exists. With an empty allowFrom
+  // the fallback's group check (`length > 0`) would pass everyone, turning the
+  // bot into an open relay, so we drop (opt-in only) until an owner is paired.
+  // Set listenAllChannels:false in access.json to always restore opt-in only.
+  const policy =
+    access.groups[channelId] ??
+    (access.listenAllChannels !== false && access.allowFrom.length > 0
+      ? { requireMention: true, allowFrom: access.allowFrom }
+      : undefined)
   if (!policy) return { action: 'drop' }
   const groupAllowFrom = policy.allowFrom ?? []
-  const requireMention = policy.requireMention ?? true
   if (groupAllowFrom.length > 0 && !groupAllowFrom.includes(senderId)) {
     return { action: 'drop' }
   }
+  // discord-threads: inside a thread the bot itself opened, keep replying without
+  // a re-mention. Everywhere else, honor the channel's requireMention setting.
+  const botOwnsThread =
+    msg.channel.isThread() && msg.channel.ownerId === client.user?.id
+  const requireMention = botOwnsThread ? false : policy.requireMention ?? true
   if (requireMention && !(await isMentioned(msg, access.mentionPatterns))) {
     return { action: 'drop' }
   }
@@ -410,7 +433,9 @@ async function fetchAllowedChannel(id: string) {
     if (userId && access.allowFrom.includes(userId)) return ch
   } else {
     const key = ch.isThread() ? ch.parentId ?? ch.id : ch.id
-    if (key in access.groups) return ch
+    // discord-threads: in all-channel mode, replies to any guild channel/thread
+    // are allowed (the inbound gate already authenticated the sender).
+    if (key in access.groups || access.listenAllChannels !== false) return ch
   }
   throw new Error(`channel ${id} is not allowlisted — add via /discord:access`)
 }
@@ -807,6 +832,13 @@ client.on('messageCreate', msg => {
   handleInbound(msg).catch(e => process.stderr.write(`discord: handleInbound failed: ${e}\n`))
 })
 
+// discord-threads: derive a concise (<=80 char) thread title from the message
+// that triggered it. Discord caps thread names at 100 chars.
+function makeThreadName(content: string): string {
+  const trimmed = content.replace(/\s+/g, ' ').trim()
+  return trimmed.length > 0 ? trimmed.slice(0, 80) : 'Conversation'
+}
+
 async function handleInbound(msg: Message): Promise<void> {
   const result = await gate(msg)
 
@@ -824,7 +856,7 @@ async function handleInbound(msg: Message): Promise<void> {
     return
   }
 
-  const chat_id = msg.channelId
+  let chat_id = msg.channelId
 
   if (msg.channel.type === ChannelType.DM) {
     dmChannelUsers.set(chat_id, msg.author.id)
@@ -846,6 +878,24 @@ async function handleInbound(msg: Message): Promise<void> {
     const emoji = permMatch[1]!.toLowerCase().startsWith('y') ? '✅' : '❌'
     void msg.react(emoji).catch(() => {})
     return
+  }
+
+  // discord-threads: a top-level channel mention gets its own thread, and the
+  // reply (plus any follow-ups) live inside it. Done AFTER the permission-reply
+  // intercept and other early returns so approvals don't spawn orphan threads.
+  // Falls back to replying in the channel if creation fails (e.g. missing
+  // "Create Public Threads").
+  if (
+    result.access.autoThread !== false &&
+    msg.channel.type !== ChannelType.DM &&
+    !msg.channel.isThread()
+  ) {
+    try {
+      const thread = await msg.startThread({ name: makeThreadName(msg.content) })
+      chat_id = thread.id
+    } catch (err) {
+      process.stderr.write(`discord-threads: startThread failed, replying in channel: ${err}\n`)
+    }
   }
 
   // Typing indicator — signals "processing" until we reply (or ~10s elapses).
