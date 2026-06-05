@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-discord-plugin",
+  "owner": {
+    "name": "yjn279"
+  },
+  "description": "Mention-gated Discord channel plugin (auto-threads on mention). Subtree fork of the official discord plugin.",
+  "plugins": [
+    {
+      "name": "discord",
+      "source": "./discord",
+      "description": "Answers @mentions in every channel, auto-opens a thread on mention, and keeps replying in-thread without re-mention.",
+      "category": "productivity",
+      "keywords": ["discord", "messaging", "channel", "mcp", "threads"]
+    }
+  ]
+}
