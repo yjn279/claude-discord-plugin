@@ -833,9 +833,14 @@ client.on('messageCreate', msg => {
 })
 
 // discord-threads: derive a concise (<=80 char) thread title from the message
-// that triggered it. Discord caps thread names at 100 chars.
+// that triggered it. Discord caps thread names at 100 chars. Mention/channel
+// tokens (<@id>, <@!id>, <@&id>, <#id>) are stripped so the title reads as the
+// human text ("やあ") rather than the raw "<@123> やあ".
 function makeThreadName(content: string): string {
-  const trimmed = content.replace(/\s+/g, ' ').trim()
+  const trimmed = content
+    .replace(/<(?:@[!&]?|#)\d+>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
   return trimmed.length > 0 ? trimmed.slice(0, 80) : 'Conversation'
 }
 
